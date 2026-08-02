@@ -270,27 +270,29 @@ function addFinalEntry(text){
   text = text.trim();
   if(!text) return;
 
-  if(lastFinalText && lastEntryTextSpan){
+  if(lastEntryTextSpan){
+    // Still in the same listening session — keep appending to one
+    // continuous block, trimming any overlap from a restart so words
+    // aren't duplicated. A pause alone should never start a new block.
+    if(text === lastFinalText) return; // exact repeat, skip
+
     const newWords = text.split(/\s+/).filter(Boolean);
-    const overlapK = findWordOverlap(lastFinalText, text);
+    const overlapK = lastFinalText ? findWordOverlap(lastFinalText, text) : 0;
 
     if(overlapK >= newWords.length){
-      // entirely a repeat of what's already shown — skip
-      return;
+      return; // fully a repeat of what's already shown
     }
-    if(overlapK > 0){
-      const remainder = newWords.slice(overlapK).join(' ');
-      const merged = lastFinalText + ' ' + remainder;
-      lastEntryTextSpan.textContent = merged;
-      fullText[fullText.length - 1] = merged;
-      lastFinalText = merged;
-      transcriptEl.scrollTop = transcriptEl.scrollHeight;
-      return;
-    }
+
+    const remainder = overlapK > 0 ? newWords.slice(overlapK).join(' ') : text;
+    const merged = lastFinalText ? (lastFinalText + ' ' + remainder) : remainder;
+    lastEntryTextSpan.textContent = merged;
+    fullText[fullText.length - 1] = merged;
+    lastFinalText = merged;
+    transcriptEl.scrollTop = transcriptEl.scrollHeight;
+    return;
   }
 
-  if(text === lastFinalText) return; // exact duplicate, skip
-
+  // First final text of a new session — start a fresh block with a timestamp.
   const entry = document.createElement('div');
   entry.className = 'entry';
   const ts = document.createElement('span');
