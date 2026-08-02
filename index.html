@@ -248,21 +248,42 @@ let lastFinalText = '';
 
 // Mobile speech recognition restarts its session every few seconds and
 // the new session's transcript often overlaps with the tail of what was
-// just finalized. Rather than requiring an exact prefix match (which
-// misses cases where the recognizer rephrases the very start slightly),
-// this finds the longest run of shared words between the end of the
-// previous block and the start of the new one, and only appends the
-// genuinely new words.
-function findWordOverlap(oldText, newText){
-  const oldWords = oldText.trim().split(/\s+/).filter(Boolean);
-  const newWords = newText.trim().split(/\s+/).filter(Boolean);
-  const maxK = Math.min(oldWords.length, newWords.length, 20);
+// just finalized — sometimes rewording a word or two at the boundary
+// (e.g. "with bhoota" becomes "with him bhoota"). An exact-match overlap
+// check misses those, so this allows ~70% of words in the overlapping
+// window to match rather than requiring all of them to match exactly.
+function normWord(w){
+  return w.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
+}
+
+function wordsOf(text){
+  return text.trim().split(/\s+/).filter(Boolean);
+}
+
+function findWordOverlap(oldWords, newWords){
+  const oldN = oldWords.map(normWord);
+  const newN = newWords.map(normWord);
+  const maxK = Math.min(oldN.length, newN.length, 25);
   for(let k = maxK; k >= 2; k--){
-    const oldTail = oldWords.slice(-k).join(' ').toLowerCase();
-    const newHead = newWords.slice(0, k).join(' ').toLowerCase();
-    if(oldTail === newHead) return k;
+    const oldTail = oldN.slice(-k);
+    const newHead = newN.slice(0, k);
+    let match = 0;
+    for(let i = 0; i < k; i++){
+      if(oldTail[i] && oldTail[i] === newHead[i]) match++;
+    }
+    if(match / k >= 0.7) return k;
   }
   return 0;
+}
+
+// Fallback for restarts that don't overlap cleanly at the boundary at
+// all, but re-say a chunk that's already fully present further back —
+// catches whole-phrase repeats that a boundary check alone would miss.
+function isAlreadyContained(oldWords, newWords){
+  if(newWords.length < 3) return false;
+  const oldNorm = oldWords.map(normWord).join(' ');
+  const newNorm = newWords.map(normWord).join(' ');
+  return oldNorm.includes(newNorm);
 }
 
 function addFinalEntry(text){
@@ -276,15 +297,19 @@ function addFinalEntry(text){
     // aren't duplicated. A pause alone should never start a new block.
     if(text === lastFinalText) return; // exact repeat, skip
 
-    const newWords = text.split(/\s+/).filter(Boolean);
-    const overlapK = lastFinalText ? findWordOverlap(lastFinalText, text) : 0;
+    const oldWords = wordsOf(lastFinalText);
+    const newWords = wordsOf(text);
+
+    if(isAlreadyContained(oldWords, newWords)) return; // already shown, skip
+
+    const overlapK = findWordOverlap(oldWords, newWords);
 
     if(overlapK >= newWords.length){
       return; // fully a repeat of what's already shown
     }
 
     const remainder = overlapK > 0 ? newWords.slice(overlapK).join(' ') : text;
-    const merged = lastFinalText ? (lastFinalText + ' ' + remainder) : remainder;
+    const merged = lastFinalText + ' ' + remainder;
     lastEntryTextSpan.textContent = merged;
     fullText[fullText.length - 1] = merged;
     lastFinalText = merged;
