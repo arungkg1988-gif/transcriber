@@ -247,28 +247,46 @@ let lastEntryTextSpan = null;
 let lastFinalText = '';
 
 // Mobile speech recognition restarts its session every few seconds and
-// re-transcribes from a slightly earlier point, producing overlapping
-// text. This checks whether new text is really a continuation of the
-// last block (shares its beginning) and merges it in place instead of
-// creating a duplicate entry.
-function overlapsPrevious(oldText, newText){
-  if(!oldText) return false;
-  const probeLen = Math.min(oldText.length, 20);
-  if(probeLen < 6) return false;
-  const probe = oldText.slice(0, probeLen);
-  return newText.startsWith(probe);
+// the new session's transcript often overlaps with the tail of what was
+// just finalized. Rather than requiring an exact prefix match (which
+// misses cases where the recognizer rephrases the very start slightly),
+// this finds the longest run of shared words between the end of the
+// previous block and the start of the new one, and only appends the
+// genuinely new words.
+function findWordOverlap(oldText, newText){
+  const oldWords = oldText.trim().split(/\s+/).filter(Boolean);
+  const newWords = newText.trim().split(/\s+/).filter(Boolean);
+  const maxK = Math.min(oldWords.length, newWords.length, 20);
+  for(let k = maxK; k >= 2; k--){
+    const oldTail = oldWords.slice(-k).join(' ').toLowerCase();
+    const newHead = newWords.slice(0, k).join(' ').toLowerCase();
+    if(oldTail === newHead) return k;
+  }
+  return 0;
 }
 
 function addFinalEntry(text){
   ensureEmptyNoteHidden();
+  text = text.trim();
+  if(!text) return;
 
-  if(overlapsPrevious(lastFinalText, text) && lastEntryTextSpan){
-    // continuation of the same utterance — replace, don't duplicate
-    lastEntryTextSpan.textContent = text;
-    fullText[fullText.length - 1] = text;
-    lastFinalText = text;
-    transcriptEl.scrollTop = transcriptEl.scrollHeight;
-    return;
+  if(lastFinalText && lastEntryTextSpan){
+    const newWords = text.split(/\s+/).filter(Boolean);
+    const overlapK = findWordOverlap(lastFinalText, text);
+
+    if(overlapK >= newWords.length){
+      // entirely a repeat of what's already shown — skip
+      return;
+    }
+    if(overlapK > 0){
+      const remainder = newWords.slice(overlapK).join(' ');
+      const merged = lastFinalText + ' ' + remainder;
+      lastEntryTextSpan.textContent = merged;
+      fullText[fullText.length - 1] = merged;
+      lastFinalText = merged;
+      transcriptEl.scrollTop = transcriptEl.scrollHeight;
+      return;
+    }
   }
 
   if(text === lastFinalText) return; // exact duplicate, skip
