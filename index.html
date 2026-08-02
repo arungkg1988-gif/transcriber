@@ -244,14 +244,8 @@ function ensureEmptyNoteHidden(){
 }
 
 let lastEntryTextSpan = null;
-let lastFinalText = '';
+let masterText = ''; // fully committed transcript for the whole listening run (persists across auto-restarts)
 
-// Mobile speech recognition restarts its session every few seconds and
-// the new session's transcript often overlaps with the tail of what was
-// just finalized — sometimes rewording a word or two at the boundary
-// (e.g. "with bhoota" becomes "with him bhoota"). An exact-match overlap
-// check misses those, so this allows ~70% of words in the overlapping
-// window to match rather than requiring all of them to match exactly.
 function normWord(w){
   return w.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
 }
@@ -260,6 +254,9 @@ function wordsOf(text){
   return text.trim().split(/\s+/).filter(Boolean);
 }
 
+// Finds the longest run of words (up to 25) at the boundary between the
+// end of `oldWords` and the start of `newWords` that match at least 70% —
+// loose enough to survive small rewording at a restart boundary.
 function findWordOverlap(oldWords, newWords){
   const oldN = oldWords.map(normWord);
   const newN = newWords.map(normWord);
@@ -276,9 +273,6 @@ function findWordOverlap(oldWords, newWords){
   return 0;
 }
 
-// Fallback for restarts that don't overlap cleanly at the boundary at
-// all, but re-say a chunk that's already fully present further back —
-// catches whole-phrase repeats that a boundary check alone would miss.
 function isAlreadyContained(oldWords, newWords){
   if(newWords.length < 3) return false;
   const oldNorm = oldWords.map(normWord).join(' ');
@@ -286,51 +280,45 @@ function isAlreadyContained(oldWords, newWords){
   return oldNorm.includes(newNorm);
 }
 
-function addFinalEntry(text){
+// Combines a stable base transcript with a newly-finalized chunk exactly
+// once, trimming any overlap. Called with the FULL text of a session
+// (built via the browser's own, trustworthy in-session indexing) rather
+// than fragment-by-fragment, so errors can't compound across many small
+// merges.
+function mergeTrim(oldText, newText){
+  newText = newText.trim();
+  if(!newText) return oldText;
+  if(!oldText) return newText;
+
+  const oldWords = wordsOf(oldText);
+  const newWords = wordsOf(newText);
+
+  if(isAlreadyContained(oldWords, newWords)) return oldText;
+
+  const k = findWordOverlap(oldWords, newWords);
+  if(k >= newWords.length) return oldText;
+
+  const remainder = newWords.slice(k).join(' ');
+  return remainder ? (oldText + ' ' + remainder) : oldText;
+}
+
+function displayMasterText(text){
   ensureEmptyNoteHidden();
-  text = text.trim();
-  if(!text) return;
-
-  if(lastEntryTextSpan){
-    // Still in the same listening session — keep appending to one
-    // continuous block, trimming any overlap from a restart so words
-    // aren't duplicated. A pause alone should never start a new block.
-    if(text === lastFinalText) return; // exact repeat, skip
-
-    const oldWords = wordsOf(lastFinalText);
-    const newWords = wordsOf(text);
-
-    if(isAlreadyContained(oldWords, newWords)) return; // already shown, skip
-
-    const overlapK = findWordOverlap(oldWords, newWords);
-
-    if(overlapK >= newWords.length){
-      return; // fully a repeat of what's already shown
-    }
-
-    const remainder = overlapK > 0 ? newWords.slice(overlapK).join(' ') : text;
-    const merged = lastFinalText + ' ' + remainder;
-    lastEntryTextSpan.textContent = merged;
-    fullText[fullText.length - 1] = merged;
-    lastFinalText = merged;
-    transcriptEl.scrollTop = transcriptEl.scrollHeight;
-    return;
+  if(!lastEntryTextSpan){
+    const entry = document.createElement('div');
+    entry.className = 'entry';
+    const ts = document.createElement('span');
+    ts.className = 'ts';
+    ts.textContent = timestamp();
+    const p = document.createElement('span');
+    entry.appendChild(ts);
+    entry.appendChild(p);
+    transcriptEl.appendChild(entry);
+    fullText.push('');
+    lastEntryTextSpan = p;
   }
-
-  // First final text of a new session — start a fresh block with a timestamp.
-  const entry = document.createElement('div');
-  entry.className = 'entry';
-  const ts = document.createElement('span');
-  ts.className = 'ts';
-  ts.textContent = timestamp();
-  const p = document.createElement('span');
-  p.textContent = text;
-  entry.appendChild(ts);
-  entry.appendChild(p);
-  transcriptEl.appendChild(entry);
-  fullText.push(text);
-  lastEntryTextSpan = p;
-  lastFinalText = text;
+  lastEntryTextSpan.textContent = text;
+  fullText[fullText.length - 1] = text;
   transcriptEl.scrollTop = transcriptEl.scrollHeight;
 }
 
@@ -371,16 +359,29 @@ function buildRecognition(){
   r.interimResults = true;
   r.lang = langSelect.value;
 
+  // Frozen snapshot of everything committed before this session started.
+  const baseText = masterText;
+  // Accumulated using this recognition instance's OWN resultIndex, which
+  // is reliable within a single instance's lifetime — no cross-session
+  // merging happens here, avoiding compounding errors.
+  let localFinalText = '';
+
   r.onresult = (event) => {
     let interimText = '';
     for(let i = event.resultIndex; i < event.results.length; i++){
       const res = event.results[i];
       if(res.isFinal){
-        clearInterim();
-        addFinalEntry(res[0].transcript.trim());
+        const piece = res[0].transcript.trim();
+        if(piece){
+          localFinalText = localFinalText ? (localFinalText + ' ' + piece) : piece;
+        }
       } else {
         interimText += res[0].transcript;
       }
+    }
+    if(localFinalText){
+      clearInterim();
+      displayMasterText(mergeTrim(baseText, localFinalText));
     }
     if(interimText.trim()){
       setInterim(interimText.trim());
@@ -393,6 +394,8 @@ function buildRecognition(){
   };
 
   r.onend = () => {
+    // Commit this session's text into the master transcript exactly once.
+    masterText = mergeTrim(baseText, localFinalText);
     if(listening){
       // browser auto-stops after a while of silence; restart if user hasn't stopped
       try{ r.start(); }catch(e){}
@@ -443,7 +446,7 @@ toggleBtn.addEventListener('click', () => {
     if(recognition) recognition.stop();
     clearInterim();
     lastEntryTextSpan = null;
-    lastFinalText = '';
+    masterText = '';
     toggleBtn.textContent = 'Start listening';
     toggleBtn.classList.remove('recording');
     setStatus('idle');
@@ -454,7 +457,7 @@ toggleBtn.addEventListener('click', () => {
 clearBtn.addEventListener('click', () => {
   fullText = [];
   lastEntryTextSpan = null;
-  lastFinalText = '';
+  masterText = '';
   transcriptEl.innerHTML = '';
   const note = document.createElement('p');
   note.className = 'empty-note';
