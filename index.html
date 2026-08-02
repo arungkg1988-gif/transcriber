@@ -243,8 +243,36 @@ function ensureEmptyNoteHidden(){
   }
 }
 
+let lastEntryTextSpan = null;
+let lastFinalText = '';
+
+// Mobile speech recognition restarts its session every few seconds and
+// re-transcribes from a slightly earlier point, producing overlapping
+// text. This checks whether new text is really a continuation of the
+// last block (shares its beginning) and merges it in place instead of
+// creating a duplicate entry.
+function overlapsPrevious(oldText, newText){
+  if(!oldText) return false;
+  const probeLen = Math.min(oldText.length, 20);
+  if(probeLen < 6) return false;
+  const probe = oldText.slice(0, probeLen);
+  return newText.startsWith(probe);
+}
+
 function addFinalEntry(text){
   ensureEmptyNoteHidden();
+
+  if(overlapsPrevious(lastFinalText, text) && lastEntryTextSpan){
+    // continuation of the same utterance — replace, don't duplicate
+    lastEntryTextSpan.textContent = text;
+    fullText[fullText.length - 1] = text;
+    lastFinalText = text;
+    transcriptEl.scrollTop = transcriptEl.scrollHeight;
+    return;
+  }
+
+  if(text === lastFinalText) return; // exact duplicate, skip
+
   const entry = document.createElement('div');
   entry.className = 'entry';
   const ts = document.createElement('span');
@@ -256,6 +284,8 @@ function addFinalEntry(text){
   entry.appendChild(p);
   transcriptEl.appendChild(entry);
   fullText.push(text);
+  lastEntryTextSpan = p;
+  lastFinalText = text;
   transcriptEl.scrollTop = transcriptEl.scrollHeight;
 }
 
@@ -367,6 +397,8 @@ toggleBtn.addEventListener('click', () => {
     listening = false;
     if(recognition) recognition.stop();
     clearInterim();
+    lastEntryTextSpan = null;
+    lastFinalText = '';
     toggleBtn.textContent = 'Start listening';
     toggleBtn.classList.remove('recording');
     setStatus('idle');
@@ -376,6 +408,8 @@ toggleBtn.addEventListener('click', () => {
 
 clearBtn.addEventListener('click', () => {
   fullText = [];
+  lastEntryTextSpan = null;
+  lastFinalText = '';
   transcriptEl.innerHTML = '';
   const note = document.createElement('p');
   note.className = 'empty-note';
@@ -415,4 +449,4 @@ if(!SpeechRecognition){
 </script>
 
 </body>
-</html>
+  </html>
